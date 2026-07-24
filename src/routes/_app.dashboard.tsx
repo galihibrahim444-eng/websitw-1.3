@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Package,
@@ -29,18 +29,94 @@ import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/components/common/stat-card";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import {
-  useProducts,
-  isLowStock,
-  hasOutOfStock,
-} from "@/lib/product-store";
+import { useProducts, isLowStock, hasOutOfStock } from "@/lib/product-store";
+import { useAuth } from "@/lib/auth-store";
 import { usePesanan } from "@/lib/pesanan-store";
 import { useMarketplaceConnections } from "@/hooks/use-marketplace-connections";
 import {
-  useStockHistory,
   STOCK_TRANSACTION_LABEL,
+  useStockHistory,
+  type StockHistoryEntry,
 } from "@/lib/stock-history-store";
 import type { PesananStatus } from "@/data/pesanan";
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ??
+  "http://localhost:3000";
+
+interface BackendListResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+interface BackendProduct {
+  id: string;
+  productCode: string;
+  name: string;
+  status: string;
+}
+
+interface BackendStock {
+  id: string;
+  qty: number;
+  minimumStock: number;
+  product: {
+    id: string;
+    productCode: string;
+    name: string;
+    status: string;
+  };
+}
+
+interface BackendStockMovement {
+  id: string;
+  productId: string | null;
+  type: string;
+  beforeQty: number;
+  qty: number;
+  afterQty: number;
+  adjustmentQty: number | null;
+  reference: string | null;
+  notes: string | null;
+  createdBy: { id: string; name: string; email: string } | null;
+  createdAt: string;
+  stock?: {
+    product?: {
+      productCode?: string;
+      name?: string;
+    };
+  } | null;
+}
+
+function getDashboardAuthToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem("maqil.auth.session");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { accessToken?: string };
+    return parsed.accessToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchBackend<T>(path: string): Promise<T> {
+  const token = getDashboardAuthToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Backend request failed: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
 
 export const Route = createFileRoute("/_app/dashboard")({
   head: () => ({
@@ -71,19 +147,25 @@ function formatDate(ts: number) {
 }
 
 function DashboardPage() {
+  const { currentUser } = useAuth();
   const products = useProducts();
   const orders = usePesanan();
   const connections = useMarketplaceConnections();
   const history = useStockHistory();
+
+  const [backendProductCount, setBackendProductCount] = useState<number | null>(null);
+  const [backendTotalSku, setBackendTotalSku] = useState<number | null>(null);
+  const [backendTotalStock, setBackendTotalStock] = useState<number | null>(null);
+  const [backendLowStockCount, setBackendLowStockCount] = useState<number | null>(null);
+  const [backendOutOfStockCount, setBackendOutOfStockCount] = useState<number | null>(null);
+  const [backendHistory, setBackendHistory] = useState<StockHistoryEntry[] | null>(null);
 
   const liveProducts = useMemo(
     () => products.filter((p) => p.status === "live"),
     [products],
   );
 
-  const totalProducts = liveProducts.length;
-
-  const totalSku = useMemo(
+  const localTotalSku = useMemo(
     () =>
       liveProducts.reduce(
         (sum, p) => sum + (p.variants?.length || 1),
@@ -92,12 +174,7 @@ function DashboardPage() {
     [liveProducts],
   );
 
-  const marketplaceConnected = useMemo(
-    () => connections.filter((c) => c.connected).length,
-    [connections],
-  );
-
-  const totalStock = useMemo(
+  const localTotalStock = useMemo(
     () =>
       liveProducts.reduce((sum, p) => {
         if (p.variants && p.variants.length > 0) {
@@ -108,15 +185,88 @@ function DashboardPage() {
     [liveProducts],
   );
 
-  const lowStockCount = useMemo(
+  const localLowStockCount = useMemo(
     () => liveProducts.filter(isLowStock).length,
     [liveProducts],
   );
 
-  const outOfStockCount = useMemo(
+  const localOutOfStockCount = useMemo(
     () => liveProducts.filter(hasOutOfStock).length,
     [liveProducts],
   );
+
+  const totalProducts = backendProductCount ?? liveProducts.length;
+  const totalSku = backendTotalSku ?? localTotalSku;
+  const marketplaceConnected = useMemo(
+    () => connections.filter((c) => c.connected).length,
+    [connections],
+  );
+  const totalStock = backendTotalStock ?? localTotalStock;
+  const lowStockCount = backendLowStockCount ?? localLowStockCount;
+  const outOfStockCount = backendOutOfStockCount ?? localOutOfStockCount;
+  const displayHistory = backendHistory ?? history;
+
+  useEffect(() => {
+    if (!currentUser?.accessToken) return;
+
+    let active = true;
+
+    async function loadTelemetry() {
+      try {
+        const productResponse = await fetchBackend<BackendListResponse<BackendProduct>>("/products?limit=1000");
+        const stockResponse = await fetchBackend<BackendListResponse<BackendStock>>("/stocks?limit=1000");
+        const historyResponse = await fetchBackend<{ success: boolean; data: BackendStockMovement[] }>(
+          "/stock-movements?limit=100",
+        );
+
+        if (!active) return;
+
+        setBackendProductCount(productResponse.total);
+        setBackendTotalSku(stockResponse.data.length);
+        setBackendTotalStock(stockResponse.data.reduce((sum, stock) => sum + stock.qty, 0));
+        setBackendLowStockCount(
+          stockResponse.data.filter((stock) => stock.qty > 0 && stock.qty <= stock.minimumStock).length,
+        );
+        setBackendOutOfStockCount(stockResponse.data.filter((stock) => stock.qty <= 0).length);
+        setBackendHistory(
+          historyResponse.data.map((item) => ({
+            id: item.id,
+            createdAt: new Date(item.createdAt).getTime(),
+            transactionType:
+              item.type === "IN"
+                ? "ADD_STOCK"
+                : item.type === "OUT"
+                ? "REMOVE_STOCK"
+                : item.type === "OPNAME"
+                ? "STOCK_OPNAME"
+                : item.type === "MARKETPLACE"
+                ? "MARKETPLACE_SYNC"
+                : "TRANSFER",
+            referenceNo: item.reference ?? "-",
+            productId: item.productId ?? "",
+            variantIndex: null,
+            sku: item.stock?.product?.productCode ?? "-",
+            productName: item.stock?.product?.name ?? "Unknown Produk",
+            variation: "",
+            warehouse: "Gudang",
+            beforeStock: item.beforeQty,
+            changeQty: item.type === "OUT" ? -item.qty : item.qty,
+            afterStock: item.afterQty,
+            note: item.notes ?? undefined,
+            user: item.createdBy?.name ?? item.createdBy?.email ?? undefined,
+          })),
+        );
+      } catch {
+        // degrade gracefully to local data.
+      }
+    }
+
+    void loadTelemetry();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.accessToken, history]);
 
   const orderCounts = useMemo(() => {
     const map = new Map<PesananStatus, number>();
@@ -129,15 +279,15 @@ function DashboardPage() {
 
   const recentHistory = useMemo(
     () =>
-      [...history]
+      [...displayHistory]
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, 10),
-    [history],
+    [displayHistory],
   );
 
   const stockChartData = useMemo(() => {
     const byDay = new Map<string, number>();
-    for (const h of history) {
+    for (const h of displayHistory) {
       const d = new Date(h.createdAt);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       byDay.set(key, (byDay.get(key) ?? 0) + 1);
@@ -152,7 +302,7 @@ function DashboardPage() {
           transaksi: count,
         };
       });
-  }, [history]);
+  }, [displayHistory]);
 
   const orderChartData = useMemo(
     () =>
@@ -360,7 +510,7 @@ function DashboardPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="secondary" className="text-[10px]">
-                          {STOCK_TRANSACTION_LABEL[h.transactionType]}
+                          {STOCK_TRANSACTION_LABEL[h.transactionType as keyof typeof STOCK_TRANSACTION_LABEL]}
                         </Badge>
                         <span className="font-mono text-xs text-muted-foreground">
                           {h.sku}

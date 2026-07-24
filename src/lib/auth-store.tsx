@@ -7,11 +7,16 @@ export type AuthUser = {
   role: Role;
   name: string;
   email: string;
+  accessToken?: string;
 };
 
 type StoredSession = AuthUser | null;
 
 const STORAGE_KEY = "maqil.auth.session";
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ??
+  "http://localhost:3000";
 
 // Dummy accounts — replace with backend call later
 const DUMMY_ACCOUNTS: Array<{ email: string; password: string; role: Role; name: string }> = [
@@ -70,21 +75,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login: AuthContextValue["login"] = async (email, password) => {
-    // TODO: replace with `POST /auth/login` to NestJS backend.
-    const match = DUMMY_ACCOUNTS.find(
-      (a) => a.email.toLowerCase() === email.trim().toLowerCase() && a.password === password,
+    const normalizedEmail = email.trim().toLowerCase();
+    const dummyMatch = DUMMY_ACCOUNTS.find(
+      (a) => a.email.toLowerCase() === normalizedEmail && a.password === password,
     );
-    if (!match) return { ok: false, error: "Email atau Password salah." };
 
-    const session: AuthUser = {
-      isLoggedIn: true,
-      role: match.role,
-      name: match.name,
-      email: match.email,
-    };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-    setCurrentUser(session);
-    return { ok: true };
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: normalizedEmail, password }),
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          return { ok: false, error: "Email atau Password salah." };
+        }
+        throw new Error(`Auth request failed: ${response.status}`);
+      }
+
+      const result = (await response.json()) as {
+        accessToken: string;
+        user: { id: string; name: string | null; email: string };
+      };
+
+      const role =
+        dummyMatch?.role ??
+        (result.user.email.toLowerCase() === "owner@maqil.id" ? "owner" : "viewer");
+
+      const session: AuthUser = {
+        isLoggedIn: true,
+        role,
+        name: result.user.name ?? result.user.email,
+        email: result.user.email,
+        accessToken: result.accessToken,
+      };
+
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+      setCurrentUser(session);
+      return { ok: true };
+    } catch (error) {
+      if (dummyMatch) {
+        const session: AuthUser = {
+          isLoggedIn: true,
+          role: dummyMatch.role,
+          name: dummyMatch.name,
+          email: dummyMatch.email,
+        };
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+        setCurrentUser(session);
+        return { ok: true };
+      }
+      return { ok: false, error: "Email atau Password salah." };
+    }
   };
 
   const logout = () => {
