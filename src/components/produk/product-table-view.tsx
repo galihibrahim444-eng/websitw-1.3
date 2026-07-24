@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { CopyProductDialog } from "@/components/produk/copy-product-dialog";
 import { duplicateProduct } from "@/lib/product-duplicator";
+import { useBackendProducts } from "@/hooks/use-backend-products";
 import {
   Search,
   Edit,
@@ -166,9 +167,10 @@ export function ProductTableView({
     }
   }, []);
 
-  const all = useProducts();
+  const backendProducts = useBackendProducts();
+  const all = backendProducts ?? useProducts();
 
-  // Sumber utama: productStore, opsional dibatasi statusFilter (Live/Draft/Arsip).
+  // Sumber utama: backend products jika tersedia, atau productStore sebagai fallback.
   const base = statusFilter ? all.filter((p) => p.status === statusFilter) : all;
 
   const marketplaceScoped = base.filter(

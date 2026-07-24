@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Search, History } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
@@ -22,8 +22,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { apiFetch } from "@/lib/api";
 import {
-  useStockHistory,
   STOCK_TRANSACTION_LABEL,
   StockTransactionType,
   type StockHistoryEntry,
@@ -79,7 +79,9 @@ function endOfDay(dateStr: string): number {
 }
 
 function RiwayatStokPage() {
-  const history = useStockHistory();
+  const [history, setHistory] = useState<StockHistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
@@ -88,6 +90,56 @@ function RiwayatStokPage() {
   const [user, setUser] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+
+    apiFetch<{ success: boolean; data: Array<any> }>("/stock-movements", {
+      params: { limit: 1000 },
+    })
+      .then((result) => {
+        if (!active) return;
+        const entries: StockHistoryEntry[] = result.data.map((item) => ({
+          id: item.id,
+          createdAt: new Date(item.createdAt).getTime(),
+          transactionType:
+            item.type === "IN"
+              ? "ADD_STOCK"
+              : item.type === "OUT"
+              ? "REMOVE_STOCK"
+              : item.type === "OPNAME"
+              ? "STOCK_OPNAME"
+              : item.type === "MARKETPLACE"
+              ? "MARKETPLACE_SYNC"
+              : "TRANSFER",
+          referenceNo: item.reference ?? "-",
+          productId: item.productId ?? "",
+          variantIndex: null,
+          sku: item.stock?.product?.productCode ?? "-",
+          productName: item.stock?.product?.name ?? "Unknown Produk",
+          variation: "",
+          warehouse: item.warehouse?.name ?? item.warehouse ?? "Gudang",
+          beforeStock: item.beforeQty,
+          changeQty: item.type === "OUT" ? -item.qty : item.qty,
+          afterStock: item.afterQty,
+          note: item.notes ?? undefined,
+          user: item.createdBy?.name ?? item.createdBy?.email ?? undefined,
+        }));
+        setHistory(entries);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const warehouseOptions = useMemo(
     () => Array.from(new Set(history.map((h) => h.warehouse).filter(Boolean))),
@@ -278,6 +330,12 @@ function RiwayatStokPage() {
       </Card>
 
       <Card className="overflow-hidden">
+        {loading ? (
+          <div className="p-10 text-center text-muted-foreground">Memuat riwayat stok...</div>
+        ) : error ? (
+          <div className="p-10 text-center text-destructive">Terjadi kesalahan: {error}</div>
+        ) : null}
+
         <div className="overflow-x-auto">
           <Table>
             <TableHeader className="bg-muted/40">

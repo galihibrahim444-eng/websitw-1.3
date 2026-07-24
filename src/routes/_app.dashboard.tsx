@@ -38,11 +38,8 @@ import {
   useStockHistory,
   type StockHistoryEntry,
 } from "@/lib/stock-history-store";
+import { apiFetch, API_BASE_URL } from "@/lib/api";
 import type { PesananStatus } from "@/data/pesanan";
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ??
-  "http://localhost:3000";
 
 interface BackendListResponse<T> {
   data: T[];
@@ -91,32 +88,6 @@ interface BackendStockMovement {
   } | null;
 }
 
-function getDashboardAuthToken(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem("maqil.auth.session");
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { accessToken?: string };
-    return parsed.accessToken ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchBackend<T>(path: string): Promise<T> {
-  const token = getDashboardAuthToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Backend request failed: ${response.status} ${response.statusText}`);
-  }
-  return response.json();
-}
 
 export const Route = createFileRoute("/_app/dashboard")({
   head: () => ({
@@ -207,16 +178,50 @@ function DashboardPage() {
   const displayHistory = backendHistory ?? history;
 
   useEffect(() => {
-    if (!currentUser?.accessToken) return;
+    console.log("Dashboard mounted");
+    console.log("API_BASE_URL", API_BASE_URL);
 
     let active = true;
 
+    // Read token from context or localStorage so the effect runs even when
+    // `currentUser.accessToken` is not set (fallback dummy login case).
+    const tokenFromCtx = currentUser?.accessToken ?? null;
+    let tokenFromStorage: string | null = null;
+    try {
+      if (typeof window !== "undefined") {
+        const raw = window.localStorage.getItem("maqil.auth.session");
+        if (raw) {
+          const parsed = JSON.parse(raw) as { accessToken?: string } | null;
+          tokenFromStorage = parsed?.accessToken ?? null;
+        }
+      }
+    } catch (e) {
+      // ignore parse error
+    }
+
+    console.log("token present?", !!(tokenFromCtx ?? tokenFromStorage));
+
     async function loadTelemetry() {
       try {
-        const productResponse = await fetchBackend<BackendListResponse<BackendProduct>>("/products?limit=1000");
-        const stockResponse = await fetchBackend<BackendListResponse<BackendStock>>("/stocks?limit=1000");
-        const historyResponse = await fetchBackend<{ success: boolean; data: BackendStockMovement[] }>(
-          "/stock-movements?limit=100",
+        console.log("GET", API_BASE_URL + "/products");
+        const productResponse = await apiFetch<BackendListResponse<BackendProduct>>("/products", {
+          params: { limit: 1000 },
+          auth: !!(tokenFromCtx ?? tokenFromStorage),
+        });
+
+        console.log("GET", API_BASE_URL + "/stocks");
+        const stockResponse = await apiFetch<BackendListResponse<BackendStock>>("/stocks", {
+          params: { limit: 1000 },
+          auth: !!(tokenFromCtx ?? tokenFromStorage),
+        });
+
+        console.log("GET", API_BASE_URL + "/stock-movements");
+        const historyResponse = await apiFetch<{ success: boolean; data: BackendStockMovement[] }>(
+          "/stock-movements",
+          {
+            params: { limit: 100 },
+            auth: !!(tokenFromCtx ?? tokenFromStorage),
+          },
         );
 
         if (!active) return;
@@ -256,8 +261,8 @@ function DashboardPage() {
             user: item.createdBy?.name ?? item.createdBy?.email ?? undefined,
           })),
         );
-      } catch {
-        // degrade gracefully to local data.
+      } catch (error) {
+        console.error("Dashboard telemetry error:", error);
       }
     }
 

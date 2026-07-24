@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { apiFetch } from "@/lib/api";
 
 export type Role = "owner" | "admin" | "warehouse" | "customer-service" | "viewer";
 
@@ -13,10 +14,6 @@ export type AuthUser = {
 type StoredSession = AuthUser | null;
 
 const STORAGE_KEY = "maqil.auth.session";
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ??
-  "http://localhost:3000";
 
 // Dummy accounts — replace with backend call later
 const DUMMY_ACCOUNTS: Array<{ email: string; password: string; role: Role; name: string }> = [
@@ -81,25 +78,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email: normalizedEmail, password }),
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          return { ok: false, error: "Email atau Password salah." };
-        }
-        throw new Error(`Auth request failed: ${response.status}`);
-      }
-
-      const result = (await response.json()) as {
+      const result = await apiFetch<{
         accessToken: string;
         user: { id: string; name: string | null; email: string };
-      };
+      }>("/auth/login", {
+        method: "POST",
+        body: { email: normalizedEmail, password },
+        auth: false,
+      });
 
       const role =
         dummyMatch?.role ??
